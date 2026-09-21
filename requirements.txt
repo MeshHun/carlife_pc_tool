@@ -1,0 +1,10 @@
+# CarLife PC Tool runtime dependencies
+# Python 3.10+
+
+PyQt6>=6.7.0
+av>=12.0.0
+protobuf>=5.0.0
+
+# NOTE:
+# USB mode also requires Android ADB to be installed and available in PATH.
+# For Windows, install Android SDK Platform Tools and ensure adb.exe is callable.
