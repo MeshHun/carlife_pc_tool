@@ -24,6 +24,7 @@ from ..core.state_machine import CarLifeStateMachine, HandshakeState
 from ..core.video_receiver import VideoReceiver
 from ..core.touch_sender import TouchSender
 from ..core.car_data_sender import CarDataSender
+from .hud_widget import HudDisplayWidget, HudFloatingWindow
 
 class VideoDisplayWidget(QtWidgets.QWidget):
     """视频渲染与触控映射控件 (高性能直接绘制与坐标映射)"""
@@ -52,7 +53,7 @@ class VideoDisplayWidget(QtWidgets.QWidget):
     def show_disconnected(self):
         self.is_connected = False
         self.current_image = None
-        self.update()
+        self.repaint()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -130,6 +131,7 @@ class MainWindow(QtWidgets.QMainWindow):
     sig_state = pyqtSignal(str)
     sig_render_trigger = pyqtSignal()          # 轻量无参渲染触发信号 (避免跨线程队列大对象积压)
     sig_video_ready = pyqtSignal(int, int, int)
+    sig_hud_info = pyqtSignal(object)          # HUD 导航转向指引数据 (CarlifeNaviNextTurnInfo)
 
     def __init__(self):
         super().__init__()
@@ -142,6 +144,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_receiver: Optional[VideoReceiver] = None
         self.touch_sender: Optional[TouchSender] = None
         self.car_data_sender: Optional[CarDataSender] = None
+        self.floating_hud = HudFloatingWindow(self)
+        self.is_connected = False
 
         # 核心防卡顿机制：单缓冲覆写式渲染 (Latest Frame Only)
         import threading
@@ -284,7 +288,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         right_box.addWidget(car_group)
 
-        # 5. 协议实时日志监控
+        # 5. HUD 导航指引测试监视器 (Channel 1 - 0x00010030)
+        hud_group = QtWidgets.QGroupBox("HUD 导航指引监视器 (Channel 1 - 0x00010030)", self)
+        hud_layout = QtWidgets.QVBoxLayout(hud_group)
+
+        self.hud_widget = HudDisplayWidget(self)
+        hud_layout.addWidget(self.hud_widget)
+
+        hud_btn_box = QtWidgets.QHBoxLayout()
+        self.btn_float_hud = QtWidgets.QPushButton("⧉ 弹出独立 HUD 浮窗", self)
+        self.btn_float_hud.clicked.connect(self._toggle_floating_hud)
+
+        self.btn_test_hud = QtWidgets.QPushButton("⚡ 模拟测试数据", self)
+        self.btn_test_hud.clicked.connect(self._simulate_test_hud)
+
+        hud_btn_box.addWidget(self.btn_float_hud)
+        hud_btn_box.addWidget(self.btn_test_hud)
+        hud_layout.addLayout(hud_btn_box)
+
+        right_box.addWidget(hud_group)
+
+        # 6. 协议实时日志监控
         log_group = QtWidgets.QGroupBox("协议通信与报文监视器", self)
         log_layout = QtWidgets.QVBoxLayout(log_group)
 
@@ -312,6 +336,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sig_state.connect(self._update_state)
         self.sig_render_trigger.connect(self._on_render_trigger)
         self.sig_video_ready.connect(self._on_video_ready)
+        self.sig_hud_info.connect(self._on_hud_info_received)
 
     def _on_render_trigger(self):
         """主线程槽函数：仅消费最新一帧图像，彻底消除帧排队堆积与卡顿"""
@@ -319,13 +344,17 @@ class MainWindow(QtWidgets.QMainWindow):
             qimg = self._latest_frame
             self._frame_pending = False
 
+        # 核心防残留守卫：若当前车机未处于已连接状态，坚决丢弃帧并跳过绘制
+        if not self.is_connected:
+            return
+
         if qimg and not self.isMinimized():
             self.video_widget.update_frame(qimg)
 
     def changeEvent(self, event):
         """窗口状态变化处理：从后台/最小化还原时，立刻渲染最新画面"""
         if event.type() == QtCore.QEvent.Type.WindowStateChange:
-            if not self.isMinimized():
+            if not self.isMinimized() and self.is_connected:
                 with self._frame_lock:
                     qimg = self._latest_frame
                 if qimg:
@@ -376,12 +405,22 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_state(self, state_str: str):
         self.lbl_status_badge.setText(f"状态: {state_str}")
         if state_str == HandshakeState.CONNECTED:
+            self.is_connected = True
             self.lbl_status_badge.setStyleSheet("color: #3fb950; font-weight: bold;")
+            self.btn_connect.setEnabled(False)
+            self.btn_disconnect.setEnabled(True)
         elif state_str == HandshakeState.DISCONNECTED:
+            self.is_connected = False
             self.lbl_status_badge.setStyleSheet("color: #f85149; font-weight: bold;")
             self.btn_connect.setEnabled(True)
             self.btn_disconnect.setEnabled(False)
+            # 无论主动还是被动断开，彻底清空缓存与画布残留
+            with self._frame_lock:
+                self._latest_frame = None
+                self._frame_pending = False
             self.video_widget.show_disconnected()
+            self.hud_widget.reset_display()
+            self.floating_hud.reset_display()
         else:
             self.lbl_status_badge.setStyleSheet("color: #d29922; font-weight: bold;")
 
@@ -426,7 +465,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 cmd_socket=cmd_sock,
                 on_state_change=lambda st: self.sig_state.emit(st),
                 on_log=lambda txt, sid, pld: self.sig_log.emit(f"{txt} (ID: {sid})", "#58a6ff" if "->" in txt else "#79c0ff"),
-                on_video_ready=lambda w, h, fps: self.sig_video_ready.emit(w, h, fps)
+                on_video_ready=lambda w, h, fps: self.sig_video_ready.emit(w, h, fps),
+                on_navi_hud_info=lambda hud: self.sig_hud_info.emit(hud)
             )
             self.state_machine.start()
 
@@ -476,12 +516,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if video_sock:
             def _frame_callback(qimg: QImage):
                 try:
-                    # 1. 窗口处于最小化/后台或图像无效时，跳过渲染，降低 CPU 负载
-                    if self.isMinimized() or qimg.isNull():
+                    # 1. 窗口断开、最小化/后台或图像无效时，跳过渲染，降低 CPU 负载
+                    if not self.is_connected or self.isMinimized() or qimg.isNull():
                         return
 
                     # 2. 单缓冲覆写式通知：若上一帧尚在渲染中，仅更新最新帧，绝不在 Qt 队列中堆积事件
                     with self._frame_lock:
+                        if not self.is_connected:
+                            return
                         self._latest_frame = qimg
                         if not self._frame_pending:
                             self._frame_pending = True
@@ -492,18 +534,84 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_receiver = VideoReceiver(video_sock, on_frame=_frame_callback)
             self.video_receiver.start()
 
+    def _on_hud_info_received(self, hud_info):
+        """处理来自手机端的 HUD 导航转向指引数据 (CarlifeNaviNextTurnInfo)"""
+        try:
+            self.hud_widget.update_hud(hud_info)
+            if self.floating_hud.isVisible():
+                self.floating_hud.update_hud(hud_info)
+
+            turn_code = getattr(hud_info, "nextTurn", 1)
+            turn_desc = constants.HUD_TURN_ACTIONS.get(turn_code, f"动作({turn_code})")
+            road = getattr(hud_info, "roadName", "") or "前方道路"
+            dist = getattr(hud_info, "remainDistance", 0)
+            total = getattr(hud_info, "totalDistance", 0)
+            self.sig_log.emit(
+                f"[HUD 导航转向] {dist}m 后 {turn_desc} ➔ {road} (总长: {total}m)",
+                "#00ffff"
+            )
+        except Exception as e:
+            logging.getLogger("CarLife_MainWindow").error(f"处理 HUD 指引异常: {e}")
+
+    def _toggle_floating_hud(self):
+        """显隐独立半透明无边框 HUD 浮窗 (可自由拖拽到副屏模拟前挡风玻璃 HUD 投影)"""
+        if self.floating_hud.isVisible():
+            self.floating_hud.hide()
+            self.btn_float_hud.setText("⧉ 弹出独立 HUD 浮窗")
+        else:
+            geo = self.geometry()
+            self.floating_hud.move(geo.x() + geo.width() - 430, geo.y() + 60)
+            self.floating_hud.show()
+            self.floating_hud.raise_()
+            self.btn_float_hud.setText("✕ 关闭独立 HUD 浮窗")
+
+    def _simulate_test_hud(self):
+        """离线轮播测试数据，验证 HUD 仪表盘与转向图标渲染效果"""
+        if not hasattr(self, '_test_hud_idx'):
+            self._test_hud_idx = 0
+
+        test_cases = [
+            {"action": 1, "nextTurn": 1, "remainDistance": 850, "totalDistance": 12500, "roadName": "京港澳高速"},
+            {"action": 2, "nextTurn": 3, "remainDistance": 300, "totalDistance": 11650, "roadName": "深南大道 (辅道)"},
+            {"action": 2, "nextTurn": 2, "remainDistance": 150, "totalDistance": 11350, "roadName": "科技南一路"},
+            {"action": 2, "nextTurn": 16, "remainDistance": 50, "totalDistance": 11200, "roadName": "掉头进入小米园区"},
+            {"action": 3, "nextTurn": 10, "remainDistance": 0, "totalDistance": 11150, "roadName": "小米科技园 - 目的地到达"},
+        ]
+        sample = test_cases[self._test_hud_idx % len(test_cases)]
+        self._test_hud_idx += 1
+
+        from ..protocol.proto_codec import CarlifeNaviNextTurnInfo
+        dummy = CarlifeNaviNextTurnInfo()
+        dummy.action = sample["action"]
+        dummy.nextTurn = sample["nextTurn"]
+        dummy.remainDistance = sample["remainDistance"]
+        dummy.totalDistance = sample["totalDistance"]
+        dummy.roadName = sample["roadName"]
+        self.sig_hud_info.emit(dummy)
+
     def stop_connection(self):
+        self.is_connected = False
         self.connector.stop_wifi_discovery()
-        if self.state_machine:
-            self.state_machine.stop()
-            self.state_machine = None
         if self.video_receiver:
             self.video_receiver.stop()
             self.video_receiver = None
+        if self.state_machine:
+            self.state_machine.stop()
+            self.state_machine = None
         self.connector.disconnect_all()
+
+        # 锁内清空最后一帧缓存，彻底消除残留
+        with self._frame_lock:
+            self._latest_frame = None
+            self._frame_pending = False
+
+        self.video_widget.show_disconnected()
+        self.hud_widget.reset_display()
+        self.floating_hud.reset_display()
         self.sig_state.emit(HandshakeState.DISCONNECTED)
-        self.sig_log.emit("[*] 已断开所有通道连接", "#8b949e")
+        self.sig_log.emit("[*] 已断开所有通道连接并清空画布", "#8b949e")
 
     def closeEvent(self, event):
+        self.floating_hud.close()
         self.stop_connection()
         event.accept()

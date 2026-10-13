@@ -56,6 +56,15 @@ class VideoReceiver:
 
     def stop(self):
         self.is_running = False
+        self.on_frame = None  # 断开时立刻切断向 UI 的回调，杜绝残存帧推送到画布
+
+        # 清空队列中积压的未解码数据包
+        while not self._packet_queue.empty():
+            try:
+                self._packet_queue.get_nowait()
+            except Exception:
+                break
+
         # 放入哨兵触发解码线程退出
         try:
             self._packet_queue.put_nowait(None)

@@ -29,11 +29,13 @@ class HandshakeState:
 class CarLifeStateMachine:
     def __init__(self, cmd_socket, on_state_change: Optional[Callable[[str], None]] = None,
                  on_log: Optional[Callable[[str, int, bytes], None]] = None,
-                 on_video_ready: Optional[Callable[[int, int, int], None]] = None):
+                 on_video_ready: Optional[Callable[[int, int, int], None]] = None,
+                 on_navi_hud_info: Optional[Callable[[object], None]] = None):
         self.cmd_socket = cmd_socket
         self.on_state_change = on_state_change
         self.on_log = on_log
         self.on_video_ready = on_video_ready
+        self.on_navi_hud_info = on_navi_hud_info
 
         self.state = HandshakeState.DISCONNECTED
         self.is_running = False
@@ -43,9 +45,9 @@ class CarLifeStateMachine:
 
         # 手机端与视频端信息
         self.phone_device_info = None
-        self.video_width = 1280
-        self.video_height = 720
-        self.video_fps = 30
+        self.video_width = 1920
+        self.video_height = 1080
+        self.video_fps = 60
 
     def set_state(self, new_state: str):
         self.state = new_state
@@ -268,3 +270,17 @@ class CarLifeStateMachine:
         # 7. 心跳回复 (131074)
         elif service_type == constants.MSG_CMD_HU_HEARTBEAT:
             self.last_heartbeat_time = time.time()
+
+        # 8. 收到导航诱导转向信息 (65584 = 0x00010030)
+        elif service_type == constants.MSG_CMD_MD_NAVI_NEXT_TURN_INFO:
+            try:
+                hud_info = proto_codec.CarlifeNaviNextTurnInfo.FromString(payload)
+                logger.info(
+                    f"[HUD导航] 道路: '{hud_info.roadName}', 下个动作: {hud_info.nextTurn}, "
+                    f"剩余距离: {hud_info.remainDistance}m, 总距离: {hud_info.totalDistance}m, "
+                    f"动作: {hud_info.action}, 图标数据: {len(hud_info.turnIconData)}B"
+                )
+                if self.on_navi_hud_info:
+                    self.on_navi_hud_info(hud_info)
+            except Exception as e:
+                logger.error(f"[HUD导航] 解析 CarlifeNaviNextTurnInfo 失败: {e}", exc_info=True)

@@ -127,6 +127,16 @@ _add_field(_m_mus, "sampleRate", 1, descriptor_pb2.FieldDescriptorProto.TYPE_INT
 _add_field(_m_mus, "channelConfig", 2, descriptor_pb2.FieldDescriptorProto.TYPE_INT32)
 _add_field(_m_mus, "sampleFormat", 3, descriptor_pb2.FieldDescriptorProto.TYPE_INT32)
 
+# 12. CarlifeNaviNextTurnInfo (sources/com/baidu/carlife/protobuf/CarlifeNaviNextTurnInfoProto.java)
+_m_hud = _file_proto.message_type.add()
+_m_hud.name = "CarlifeNaviNextTurnInfo"
+_add_field(_m_hud, "action", 1, descriptor_pb2.FieldDescriptorProto.TYPE_INT32)
+_add_field(_m_hud, "nextTurn", 2, descriptor_pb2.FieldDescriptorProto.TYPE_INT32)
+_add_field(_m_hud, "roadName", 3, descriptor_pb2.FieldDescriptorProto.TYPE_STRING)
+_add_field(_m_hud, "totalDistance", 4, descriptor_pb2.FieldDescriptorProto.TYPE_INT32)
+_add_field(_m_hud, "remainDistance", 5, descriptor_pb2.FieldDescriptorProto.TYPE_INT32)
+_add_field(_m_hud, "turnIconData", 6, descriptor_pb2.FieldDescriptorProto.TYPE_BYTES)
+
 # 注册文件描述符并导出 Message 类
 _file_desc = _pool.Add(_file_proto)
 
@@ -142,3 +152,5 @@ CarlifeTouchAction = message_factory.GetMessageClass(_file_desc.message_types_by
 CarlifeCarSpeed = message_factory.GetMessageClass(_file_desc.message_types_by_name["CarlifeCarSpeed"])
 CarlifeCarHardKeyCode = message_factory.GetMessageClass(_file_desc.message_types_by_name["CarlifeCarHardKeyCode"])
 CarlifeMusicInit = message_factory.GetMessageClass(_file_desc.message_types_by_name["CarlifeMusicInit"])
+CarlifeNaviNextTurnInfo = message_factory.GetMessageClass(_file_desc.message_types_by_name["CarlifeNaviNextTurnInfo"])
+

@@ -199,6 +199,9 @@ MSG_NAMES = {
     MSG_CAR_ACCEL: "CAR_ACCEL",
     MSG_CAR_OIL: "CAR_OIL",
     MSG_CAR_GEAR: "CAR_GEAR",
+
+    # HUD 导航转向消息
+    MSG_CMD_MD_NAVI_NEXT_TURN_INFO: "MD_NAVI_NEXT_TURN_INFO",
 }
 
 # ================= 触控动作类型 =================
@@ -212,3 +215,24 @@ KEYCODE_BACK = 2
 KEYCODE_PHONE_CALL = 3
 KEYCODE_PHONE_END = 4
 KEYCODE_MEDIA = 5
+
+# ================= HUD 转向动作码枚举 (CarlifeNaviNextTurnInfo.nextTurn) =================
+HUD_TURN_ACTIONS = {
+    1: "直行",
+    2: "右前方转弯",
+    3: "右转",
+    4: "右后方转弯",
+    5: "掉头",
+    6: "左后方转弯",
+    7: "左转",
+    8: "左前方转弯",
+    9: "到达途经点",
+    10: "到达目的地",
+    11: "进入环岛",
+    12: "驶出环岛",
+    16: "掉头",
+    24: "靠最右侧车道",
+    25: "靠最左侧车道",
+    80: "右前方分支",
+    81: "左前方分支",
+}
