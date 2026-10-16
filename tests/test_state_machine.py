@@ -12,9 +12,10 @@ import sys
 import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from carlife_pc_hu.protocol import constants, framing, proto_codec
-from carlife_pc_hu.core.state_machine import CarLifeStateMachine, HandshakeState
+from carlife_pc_tool.protocol import constants, framing, proto_codec
+from carlife_pc_tool.core.state_machine import CarLifeStateMachine, HandshakeState
 
 class TestCarLifeStateMachine(unittest.TestCase):
     def setUp(self):

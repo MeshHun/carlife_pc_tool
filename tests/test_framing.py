@@ -9,9 +9,12 @@ import sys
 import os
 
 # 将上级目录加入路径
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from carlife_pc_hu.protocol import constants, framing, proto_codec
+try:
+    from protocol import constants, framing, proto_codec
+except ImportError:
+    from carlife_pc_tool.protocol import constants, framing, proto_codec
 
 class TestCarLifeProtocol(unittest.TestCase):
     def test_cmd_header_framing(self):

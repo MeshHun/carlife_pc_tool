@@ -316,7 +316,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.text_log.setReadOnly(True)
 
         log_ctrl_box = QtWidgets.QHBoxLayout()
-        self.chk_filter_frequent = QtWidgets.QCheckBox("过滤高频心跳与状态轮询", self)
+        self.chk_filter_frequent = QtWidgets.QCheckBox("过滤高频消息 (心跳/进度条)", self)
         self.chk_filter_frequent.setChecked(True)
         btn_clear_log = QtWidgets.QPushButton("清空日志", self)
         btn_clear_log.clicked.connect(self.text_log.clear)
@@ -374,25 +374,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.edit_ip.setText("192.168.")
             self.edit_ip.setPlaceholderText("手动输入手机 IP 地址")
             self.edit_ip.setEnabled(True)
-
+ 
     def _append_log(self, text: str, color: str):
-        # 默认过滤高频心跳保活与状态轮询日志，保持界面干净
+        # 过滤高频日志：仅过滤视频心跳保活与媒体进度条高频推送
         if hasattr(self, 'chk_filter_frequent') and self.chk_filter_frequent.isChecked():
             frequent_keywords = [
-                "HU_HEARTBEAT",
-                "MD_HEARTBEAT",
-                "MD_CAR_DATA",
-                "MD_MODULE_STATUS_LIST",
-                "MD_MIC_RECORD_WAKEUP_START",
-                "MD_REQ_VEHICLE_DATA",
-                "MD_CONNECT_TIME_SYNC",
+                "VIDEO_HEARTBEAT",             # ID: 131074 车端/通道2心跳
+                "131074",
+                "MEDIA_PROGRESS_BAR",          # ID: 65590 音乐播放进度条高频推送
                 "65590",
-                "65563",
-                "65574",
-                "65570",
-                "65589",
-                "65632",
-                "131074"
             ]
             if any(kw in text for kw in frequent_keywords):
                 return
@@ -461,10 +451,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.car_data_sender = CarDataSender(data_sock)
 
             # 2. 启动状态机
+            def _format_ui_log(txt: str, sid: int):
+                if "[模块状态]" in txt or "[巡航电子狗" in txt:
+                    color = "#7ee787"  # 醒目亮绿高亮业务状态
+                elif "->" in txt:
+                    color = "#58a6ff"  # 车端发出
+                else:
+                    color = "#79c0ff"  # 手机端收到
+                self.sig_log.emit(f"{txt} (ID: {sid})", color)
+
             self.state_machine = CarLifeStateMachine(
                 cmd_socket=cmd_sock,
                 on_state_change=lambda st: self.sig_state.emit(st),
-                on_log=lambda txt, sid, pld: self.sig_log.emit(f"{txt} (ID: {sid})", "#58a6ff" if "->" in txt else "#79c0ff"),
+                on_log=lambda txt, sid, pld: _format_ui_log(txt, sid),
                 on_video_ready=lambda w, h, fps: self.sig_video_ready.emit(w, h, fps),
                 on_navi_hud_info=lambda hud: self.sig_hud_info.emit(hud)
             )

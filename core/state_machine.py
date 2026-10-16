@@ -30,12 +30,14 @@ class CarLifeStateMachine:
     def __init__(self, cmd_socket, on_state_change: Optional[Callable[[str], None]] = None,
                  on_log: Optional[Callable[[str, int, bytes], None]] = None,
                  on_video_ready: Optional[Callable[[int, int, int], None]] = None,
-                 on_navi_hud_info: Optional[Callable[[object], None]] = None):
+                 on_navi_hud_info: Optional[Callable[[object], None]] = None,
+                 on_module_status: Optional[Callable[[list], None]] = None):
         self.cmd_socket = cmd_socket
         self.on_state_change = on_state_change
         self.on_log = on_log
         self.on_video_ready = on_video_ready
         self.on_navi_hud_info = on_navi_hud_info
+        self.on_module_status = on_module_status
 
         self.state = HandshakeState.DISCONNECTED
         self.is_running = False
@@ -184,8 +186,19 @@ class CarLifeStateMachine:
             service_type, payload = msg
             msg_name = constants.MSG_NAMES.get(service_type, f"UNKNOWN_0x{service_type:08X}")
             logger.debug(f"[RX CMD] {msg_name} (ID: {service_type}, len: {len(payload)})")
+
+            # 针对模块状态与电子狗诱导生成直观中文摘要
+            if service_type == constants.MSG_CMD_MODULE_STATUS:
+                status_summary = self._parse_module_status_summary(payload)
+                log_txt = f"<- [模块状态] {status_summary}"
+            elif service_type == constants.MSG_CMD_NAVI_ASSITANTGUIDE_INFO:
+                assist_summary = self._parse_assistant_guide_summary(payload)
+                log_txt = f"<- [巡航电子狗诱导] {assist_summary}"
+            else:
+                log_txt = f"<- 收到: {msg_name}"
+
             if self.on_log:
-                self.on_log(f"<- 收到: {msg_name}", service_type, payload)
+                self.on_log(log_txt, service_type, payload)
 
             self._handle_message(service_type, payload)
 
@@ -284,3 +297,48 @@ class CarLifeStateMachine:
                     self.on_navi_hud_info(hud_info)
             except Exception as e:
                 logger.error(f"[HUD导航] 解析 CarlifeNaviNextTurnInfo 失败: {e}", exc_info=True)
+
+        # 9. 收到模块状态变更列表 (65574 = 0x00010026)
+        elif service_type == constants.MSG_CMD_MODULE_STATUS:
+            try:
+                msl = proto_codec.CarlifeModuleStatusList.FromString(payload)
+                status_list = [(item.moduleID, item.statusID) for item in msl.moduleStatus]
+                summary = self._parse_module_status_summary(payload)
+                logger.info(f"[模块状态变更] {summary}")
+                if self.on_module_status:
+                    self.on_module_status(status_list)
+            except Exception as e:
+                logger.error(f"[模块状态] 解析 CarlifeModuleStatusList 失败: {e}", exc_info=True)
+
+    def _parse_module_status_summary(self, payload: bytes) -> str:
+        """解析 CarlifeModuleStatusList 并输出易读中文摘要"""
+        items_desc = []
+        try:
+            msl = proto_codec.CarlifeModuleStatusList.FromString(payload)
+            for item in msl.moduleStatus:
+                items_desc.append(constants.format_module_status_desc(item.moduleID, item.statusID))
+        except Exception:
+            try:
+                ms = proto_codec.CarlifeModuleStatus.FromString(payload)
+                items_desc.append(constants.format_module_status_desc(ms.moduleID, ms.statusID))
+            except Exception as e:
+                return f"解析失败({e})"
+        return " | ".join(items_desc) if items_desc else "空列表"
+
+    def _parse_assistant_guide_summary(self, payload: bytes) -> str:
+        """解析 CarlifeNaviAssitantGuideInfo 巡航电子狗诱导摘要"""
+        try:
+            guide = proto_codec.CarlifeNaviAssitantGuideInfo.FromString(payload)
+            parts = []
+            if guide.cameraSpeed > 0:
+                parts.append(f"测速限速: {guide.cameraSpeed}km/h")
+            if guide.remainDistance > 0:
+                parts.append(f"剩余距离: {guide.remainDistance}m")
+            if guide.assistantType > 0:
+                parts.append(f"辅助诱导类型: {guide.assistantType}")
+            if guide.trafficSignType > 0:
+                parts.append(f"交通标志: {guide.trafficSignType}")
+            return ", ".join(parts) if parts else "基础提示"
+        except Exception as e:
+            return f"解析异常({e})"
+
