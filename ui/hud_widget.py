@@ -7,6 +7,7 @@ CarLife HUD (抬头显示/仪表盘) 导航信息测试显示器
 - 源码位置: sources/com/baidu/carlife/core/base/subscribe/RGEventHUDCollection.java
 """
 
+import sys
 from typing import Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import Qt, QPoint, QRectF
@@ -227,7 +228,8 @@ class HudDisplayWidget(QtWidgets.QFrame):
         # 距离大字 (如 350 m 或 1.2 km)
         dist_box = QtWidgets.QHBoxLayout()
         self.lbl_remain_dist = QtWidgets.QLabel("-- m", self)
-        self.lbl_remain_dist.setStyleSheet("color: #00f0ff; font-size: 32px; font-weight: bold; font-family: Consolas, 'Segoe UI', monospace;")
+        font_mono = "Menlo, Monaco" if sys.platform == "darwin" else "Consolas, 'Segoe UI'"
+        self.lbl_remain_dist.setStyleSheet(f"color: #00f0ff; font-size: 32px; font-weight: bold; font-family: {font_mono};")
 
         self.lbl_turn_action = QtWidgets.QLabel("直行", self)
         self.lbl_turn_action.setStyleSheet("color: #e6edf3; font-size: 16px; font-weight: bold; padding-left: 6px;")

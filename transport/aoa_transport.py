@@ -18,6 +18,7 @@ import select
 import logging
 import threading
 from typing import Dict, Tuple, Optional, Callable, List
+from ..protocol import constants
 
 logger = logging.getLogger("CarLife_AOA")
 
@@ -46,35 +47,76 @@ ACCESSORY_STRINGS = [
 ]
 
 def get_pyusb_backend():
-    """获取可用的 PyUSB 后端 (优先使用系统 libusb-1.0，自动适配 Windows 环境)"""
+    """获取可用的 PyUSB 后端 (支持 macOS / Windows / Linux 跨平台自动检测)"""
     try:
         import usb.core
         import usb.backend.libusb1
 
-        # 1. 尝试默认 libusb1
+        # 1. 尝试默认 libusb1 (系统全局路径已注册时)
         be = usb.backend.libusb1.get_backend()
         if be is not None:
             return be
 
-        # 2. 尝试从 Python 安装的 libusb 运行时包中加载 dll
+        # 2. 尝试从 Python 安装的 libusb 预编译运行时包中获取动态库路径
         try:
             import libusb
-            libusb_dir = os.path.dirname(libusb.__file__)
-            candidates = [
-                os.path.join(libusb_dir, "_platform", "windows", "x86_64", "libusb-1.0.dll"),
-                os.path.join(libusb_dir, "_platform", "windows", "x86", "libusb-1.0.dll"),
-                os.path.join(libusb_dir, "libusb-1.0.dll"),
-            ]
-            for p in candidates:
-                if os.path.exists(p):
-                    be = usb.backend.libusb1.get_backend(find_library=lambda x, p=p: p)
-                    if be is not None:
-                        logger.info(f"成功加载 libusb 运行时: {p}")
-                        return be
-        except Exception as e:
-            logger.debug(f"从 libusb 包加载 dll 失败: {e}")
+            dll_path = None
+            try:
+                import libusb._platform as _p
+                if hasattr(_p, "DLL_PATH") and os.path.exists(str(_p.DLL_PATH)):
+                    dll_path = str(_p.DLL_PATH)
+            except Exception:
+                pass
 
-        # 3. 降级尝试 libusb0
+            if not dll_path:
+                libusb_dir = os.path.dirname(libusb.__file__)
+                candidates = [
+                    # macOS (Apple Silicon & Intel)
+                    os.path.join(libusb_dir, "_platform", "macos", "arm64", "libusb-1.0.dylib"),
+                    os.path.join(libusb_dir, "_platform", "macos", "x86_64", "libusb-1.0.dylib"),
+                    os.path.join(libusb_dir, "_platform", "macos", "x86", "libusb-1.0.dylib"),
+                    # Windows
+                    os.path.join(libusb_dir, "_platform", "windows", "x86_64", "libusb-1.0.dll"),
+                    os.path.join(libusb_dir, "_platform", "windows", "x86", "libusb-1.0.dll"),
+                    os.path.join(libusb_dir, "libusb-1.0.dll"),
+                    # Linux
+                    os.path.join(libusb_dir, "_platform", "linux", "x86_64", "libusb-1.0.so"),
+                    os.path.join(libusb_dir, "_platform", "linux", "aarch64", "libusb-1.0.so"),
+                    os.path.join(libusb_dir, "_platform", "linux", "arm", "libusb-1.0.so"),
+                ]
+                for p in candidates:
+                    if os.path.exists(p):
+                        dll_path = p
+                        break
+
+            if dll_path:
+                be = usb.backend.libusb1.get_backend(find_library=lambda x, p=dll_path: p)
+                if be is not None:
+                    logger.info(f"成功加载 libusb 运行时: {dll_path}")
+                    return be
+        except Exception as e:
+            logger.debug(f"从 libusb 运行时包加载动态库失败: {e}")
+
+        # 3. 尝试常见系统安装路径 (Homebrew / MacPorts / Linux 系统库)
+        system_candidates = [
+            # macOS Homebrew (Apple Silicon / Intel)
+            "/opt/homebrew/lib/libusb-1.0.dylib",
+            "/usr/local/lib/libusb-1.0.dylib",
+            "/opt/local/lib/libusb-1.0.dylib",
+            # Linux 系统路径
+            "/usr/lib/libusb-1.0.so",
+            "/usr/lib/x86_64-linux-gnu/libusb-1.0.so",
+            "/usr/lib/aarch64-linux-gnu/libusb-1.0.so",
+            "/usr/local/lib/libusb-1.0.so",
+        ]
+        for p in system_candidates:
+            if os.path.exists(p):
+                be = usb.backend.libusb1.get_backend(find_library=lambda x, p=p: p)
+                if be is not None:
+                    logger.info(f"成功加载系统 libusb 动态库: {p}")
+                    return be
+
+        # 4. 降级尝试 libusb0
         import usb.backend.libusb0
         be0 = usb.backend.libusb0.get_backend()
         if be0 is not None:
@@ -90,11 +132,14 @@ def reset_aoa_device_pnp() -> bool:
     通过 Windows 原生 pnputil 工具快速重启 Android AOA 复合设备 (VID 0x18D1, PID 0x2D01 / 0x2D00)，
     促使 Android 手机在免拔插 USB 数据线的前提下，硬件脱离 Accessory 模式并重枚举回普通模式 (0x4ee7)。
     """
+    if sys.platform != "win32":
+        return False
     import subprocess
     try:
         out = subprocess.check_output(
             "pnputil /enum-devices /connected /class USB",
             shell=True,
+            stderr=subprocess.DEVNULL,
             timeout=3
         ).decode("gbk", errors="ignore")
         for line in out.splitlines():
@@ -147,13 +192,30 @@ class AoaTransportSession:
         client_sockets = {}
         for ch_id in channel_ids:
             s_client, s_engine = socket.socketpair()
-            # 开启低延迟配置
+            # 开启低延迟配置 (TCP 属性，在 AF_UNIX 上安全忽略)
             try:
                 s_client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 s_engine.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             except Exception:
                 pass
-            s_engine.setblocking(False)
+
+            # 跨平台关键修复：macOS 下 AF_UNIX 默认缓冲区仅 8KB！
+            # 2240x976 高清视频关键帧动辄数十KB至数百KB，必须扩容缓冲区，
+            # 否则非阻塞写入时瞬时填满导致 sendall 发生 BlockingIOError 并截断丢包！
+            buf_size = 8 * 1024 * 1024 if ch_id == constants.CHANNEL_VIDEO else 1024 * 1024
+            for s in (s_client, s_engine):
+                try:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buf_size)
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buf_size)
+                except Exception:
+                    pass
+
+            # 核心活跃通道（通道 1 控制、通道 2 视频）：上层有专门常驻线程持续读取，
+            # 必须保持阻塞/超时模式保证报文绝对完整写入，绝不可非阻塞截断！
+            if ch_id in (constants.CHANNEL_CMD, constants.CHANNEL_VIDEO):
+                s_engine.settimeout(2.0)
+            else:
+                s_engine.setblocking(False)
 
             self.channel_pairs[ch_id] = (s_client, s_engine)
             self.engine_to_channel[s_engine] = ch_id
@@ -220,8 +282,8 @@ class AoaTransportSession:
 
         while self.is_running:
             try:
-                # 尝试从 USB Bulk 端点拉取数据块 (最大 16KB，超时 500ms)
-                chunk = self.ep_in.read(16384, timeout=500)
+                # 尝试从 USB Bulk 端点拉取数据块 (最大 64KB，提升 2240x976 高清视频吞吐，超时 500ms)
+                chunk = self.ep_in.read(65536, timeout=500)
                 if chunk:
                     rx_buf.extend(chunk)
             except Exception as e:
@@ -256,17 +318,18 @@ class AoaTransportSession:
                 if ch_id in self.channel_pairs:
                     _, s_engine = self.channel_pairs[ch_id]
                     try:
+                        if ch_id not in (constants.CHANNEL_CMD, constants.CHANNEL_VIDEO):
+                            # 对于当前未实现消费者的通道 (如音频通道 3/4/5)，若缓冲区已满直接整包丢弃，绝不写入半包破坏分帧
+                            _, writable, _ = select.select([], [s_engine], [], 0)
+                            if not writable:
+                                continue
                         s_engine.sendall(payload)
-                    except (BlockingIOError, OSError) as e:
-                        err_no = getattr(e, "winerror", None) or getattr(e, "errno", None)
-                        # 10035 (WSAEWOULDBLOCK), 11 (EAGAIN), 35 (EWOULDBLOCK) 表示上层未读取该通道导致本地缓冲区已满
-                        if err_no in (10035, 11, 35) or isinstance(e, BlockingIOError):
-                            # 上层暂未消费该通道（如当前未实现音频播放的通道 3 媒体音频），静默丢弃多余帧，避免刷屏
-                            pass
-                        else:
+                    except (socket.timeout, BlockingIOError, OSError) as e:
+                        if self.is_running:
                             logger.warning(f"[AOA Rx] 向通道 {ch_id} 虚拟 Socket 写入失败: {e}")
                     except Exception as e:
-                        logger.warning(f"[AOA Rx] 向通道 {ch_id} 虚拟 Socket 写入失败: {e}")
+                        if self.is_running:
+                            logger.warning(f"[AOA Rx] 向通道 {ch_id} 虚拟 Socket 写入异常: {e}")
                 else:
                     logger.debug(f"[AOA Rx] 忽略未监听通道 {ch_id} 的数据，长度: {msg_len}")
 
@@ -316,11 +379,16 @@ class AoaTransportSession:
                 # 依据百度官方接入指南 6.1.1.3 节要求：
                 # “车机端在发送AOA数据时需要注意将8个字节的AOA Head和CarLife Msg单独分开发送。”
                 # 手机端使用两次独立的 read() 获取 AOA 头和消息载荷，此处必须分两次 USB Bulk 传输写入
-                self.ep_out.write(header, timeout=1000)
+                # 握手时手机端 Android 系统冷启动拉起 CarLife App 需要 1~2 秒，超时时间放宽至 3000ms 避免过早超时断开
+                self.ep_out.write(header, timeout=3000)
                 if payload:
-                    self.ep_out.write(payload, timeout=1000)
+                    self.ep_out.write(payload, timeout=3000)
             except Exception as e:
-                logger.error(f"[AOA Tx] USB Bulk OUT 写入通道 {channel_id} 失败: {e}，判定连接已断开！")
+                err_str = str(e)
+                if "timed out" in err_str.lower() or "timeout" in err_str.lower():
+                    logger.error(f"[AOA Tx] USB Bulk OUT 写入通道 {channel_id} 超时: 手机端可能未在前台打开 CarLife 或正在等待权限授权，请解锁手机并保持 CarLife 在前台！")
+                else:
+                    logger.error(f"[AOA Tx] USB Bulk OUT 写入通道 {channel_id} 失败: {e}，判定连接已断开！")
                 self._handle_fatal_error(f"Bulk OUT 写入通道 {channel_id} 失败: {e}")
 
     def close(self):
@@ -358,22 +426,23 @@ class AoaTransportSession:
         except Exception as e:
             logger.debug(f"[AOA] 发送断开退出帧异常 (可能链路已断): {e}")
 
-        # 2. 对 USB 设备执行 Bus Reset，促使 Android 硬件脱离 Accessory 模式重新枚举，广播 USB_ACCESSORY_DETACHED
-        try:
-            self.dev.reset()
-            logger.info("[AOA] 已向 Android 设备发送 USB Bus Reset 信号")
-        except Exception as e:
-            logger.debug(f"[AOA] USB 设备 reset 异常: {e}")
-
-        # 3. 释放 USB 接口
+        # 2. 释放 USB 接口与内核驱动占用 (macOS / libusb 必须先 dispose 才能成功 reset)
         try:
             import usb.util
             usb.util.dispose_resources(self.dev)
         except Exception:
             pass
 
+        # 3. 对 USB 设备执行 Bus Reset，促使 Android 硬件脱离 Accessory 模式重新枚举，广播 USB_ACCESSORY_DETACHED
+        try:
+            self.dev.reset()
+            logger.info("[AOA] 已向 Android 设备发送 USB Bus Reset 信号")
+        except Exception as e:
+            logger.debug(f"[AOA] USB 设备 reset 异常: {e}")
+
         # 4. 触发 Windows PnP 重启 USB 复合设备，迫使 Android 手机脱离 2D01 恢复普通模式 (4EE7)，免拔线！
-        reset_aoa_device_pnp()
+        if sys.platform == "win32":
+            reset_aoa_device_pnp()
 
         logger.info("[AOA] 会话已安全关闭并复位 USB 端口")
 
@@ -386,10 +455,14 @@ class AoaManager:
         self.active_session: Optional[AoaTransportSession] = None
 
     def is_backend_available(self) -> bool:
+        if not self.backend:
+            self.backend = get_pyusb_backend()
         return self.backend is not None
 
     def find_all_usb_devices(self) -> list:
         """枚举所有连接到本机的 USB 设备"""
+        if not self.backend:
+            self.backend = get_pyusb_backend()
         if not self.backend:
             return []
         try:
@@ -417,6 +490,9 @@ class AoaManager:
                 log_cb(msg, color)
 
         if not self.backend:
+            self.backend = get_pyusb_backend()
+
+        if not self.backend:
             _log("[-] 未找到可用的 libusb 驱动后端，无法操作 USB 接口", "#f85149")
             return False
 
@@ -428,14 +504,20 @@ class AoaManager:
             pass
 
         # 1. 检查是否残留处于 AOA 模式 (0x2D00 / 0x2D01)
-        # 核心机制：若设备直接处于 0x2D01，说明此前会话断开后手机尚未重枚举，
-        # 此时手机端无活跃进程监听 /dev/usb_accessory，直接写入端点必然 10060 超时。
-        # 自动触发 Windows PnP 端口复位让手机切回普通模式 (0x4EE7)，再通过 52/53 指令唤醒拉起 CarLife！
         aoa_dev = self.find_aoa_device()
         if aoa_dev:
-            _log(f"[*] 检测到 Android 设备处于残留 AOA 模式 (PID: {hex(aoa_dev.idProduct)})，正在触发端口电源复位以唤醒手机...", "#d29922")
-            reset_aoa_device_pnp()
-            time.sleep(1.5)
+            if sys.platform == "win32":
+                _log(f"[*] 检测到 Android 设备处于残留 AOA 模式 (PID: {hex(aoa_dev.idProduct)})，正在触发端口电源复位以唤醒手机...", "#d29922")
+                reset_aoa_device_pnp()
+                time.sleep(1.5)
+            else:
+                try:
+                    import usb.util
+                    usb.util.dispose_resources(aoa_dev)
+                    aoa_dev.reset()
+                    time.sleep(1.5)
+                except Exception as e:
+                    logger.debug(f"USB reset 异常: {e}")
 
         # 2. 扫描待切换的 USB 设备
         devices = self.find_all_usb_devices()
@@ -446,6 +528,9 @@ class AoaManager:
         for d in devices:
             # 过滤标准集线器与纯根端口
             if d.bDeviceClass == 9:  # HUB
+                continue
+            # 排除已处于 AOA 模式的产品 ID (0x2D00~0x2D05)，仅对普通 Android 设备发起切换协商
+            if d.idVendor == AOA_VID and d.idProduct in AOA_PIDS:
                 continue
             try:
                 # 尝试发送 51 号指令探测是否支持 AOA
@@ -464,10 +549,16 @@ class AoaManager:
                 continue
 
         if not target_dev:
+            # 如果手机已处于 AOA 模式，直接进入连接复用阶段
+            aoa_curr = self.find_aoa_device()
+            if aoa_curr:
+                _log(f"[*] 检测到 Android 手机当前已处于 AOA 配件模式 (PID={hex(aoa_curr.idProduct)})，直接复用该模式建立通信...", "#3fb950")
+                return True
+
             if access_denied_count > 0:
                 _log("[-] 未能通过 AOA 探测到设备：检测到 USB 端口被其他进程独占（请关闭正在运行的手机助手或 ADB 工具）", "#f85149")
             else:
-                _log("[-] 未能通过 AOA 协议探测到 Android 设备，请确认手机已使用 USB 数据线直连电脑", "#f85149")
+                _log("[-] 未能通过 AOA 协议探测到 Android 设备，请确认手机已解锁并使用 USB 数据线直连电脑", "#f85149")
             return False
 
         # 3. 发送 52 号指令：写入认证参数 (匹配 accessory_filter.xml)
@@ -496,6 +587,8 @@ class AoaManager:
             aoa_dev = self.find_aoa_device()
             if aoa_dev:
                 _log(f"[+] 手机已成功切换至 AOA 配件模式！(VID=0x18D1 PID={hex(aoa_dev.idProduct)})", "#3fb950")
+                # 关键：给 Android 系统预留 1.5 秒完成 CarLife App 的冷拉起与 /dev/usb_accessory 准备
+                time.sleep(1.5)
                 return True
 
         _log("[-] 超时：未在总线上检测到重枚举后的 AOA 设备 (0x18D1)", "#f85149")

@@ -27,7 +27,7 @@ class VideoReceiver:
         self.is_running = False
         self._recv_thread: Optional[threading.Thread] = None
         self._decode_thread: Optional[threading.Thread] = None
-        self._packet_queue: queue.Queue = queue.Queue(maxsize=30)
+        self._packet_queue: queue.Queue = queue.Queue(maxsize=60)
         self._codec_ctx = None
 
     def start(self):

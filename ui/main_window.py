@@ -157,33 +157,44 @@ class MainWindow(QtWidgets.QMainWindow):
         self._connect_signals()
 
     def _setup_theme(self):
+        # 跨平台字体适配，避免 macOS Qt 搜索 Segoe UI / Consolas 产生别名耗时告警
+        if sys.platform == "darwin":
+            font_ui = '"PingFang SC", "Helvetica Neue", Arial'
+            font_mono = 'Menlo, Monaco'
+        elif sys.platform == "win32":
+            font_ui = '"Segoe UI", "Microsoft YaHei", Arial'
+            font_mono = '"Consolas", "Courier New"'
+        else:
+            font_ui = '"DejaVu Sans", Arial'
+            font_mono = '"DejaVu Sans Mono", "Courier New"'
+
         # 现代暗色高级车控主题
-        self.setStyleSheet("""
-            QMainWindow { background-color: #0d1117; }
-            QWidget { color: #c9d1d9; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 13px; }
-            QGroupBox { border: 1px solid #30363d; border-radius: 6px; margin-top: 10px; font-weight: bold; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #58a6ff; }
-            QPushButton {
+        self.setStyleSheet(f"""
+            QMainWindow {{ background-color: #0d1117; }}
+            QWidget {{ color: #c9d1d9; font-family: {font_ui}; font-size: 13px; }}
+            QGroupBox {{ border: 1px solid #30363d; border-radius: 6px; margin-top: 10px; font-weight: bold; }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #58a6ff; }}
+            QPushButton {{
                 background-color: #21262d; border: 1px solid #363b42; border-radius: 6px;
                 padding: 6px 14px; font-weight: bold; min-height: 20px;
-            }
-            QPushButton:hover { background-color: #30363d; border-color: #8b949e; }
-            QPushButton:pressed { background-color: #161b22; }
-            QPushButton#btn_connect { background-color: #238636; color: #ffffff; border: none; }
-            QPushButton#btn_connect:hover { background-color: #2ea043; }
-            QPushButton#btn_disconnect { background-color: #da3633; color: #ffffff; border: none; }
-            QPushButton#btn_disconnect:hover { background-color: #f85149; }
-            QLineEdit, QComboBox {
+            }}
+            QPushButton:hover {{ background-color: #30363d; border-color: #8b949e; }}
+            QPushButton:pressed {{ background-color: #161b22; }}
+            QPushButton#btn_connect {{ background-color: #238636; color: #ffffff; border: none; }}
+            QPushButton#btn_connect:hover {{ background-color: #2ea043; }}
+            QPushButton#btn_disconnect {{ background-color: #da3633; color: #ffffff; border: none; }}
+            QPushButton#btn_disconnect:hover {{ background-color: #f85149; }}
+            QLineEdit, QComboBox {{
                 background-color: #161b22; border: 1px solid #30363d; border-radius: 6px;
                 padding: 5px; color: #c9d1d9;
-            }
-            QTextEdit {
+            }}
+            QTextEdit {{
                 background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
-                font-family: "Consolas", "Courier New", monospace; font-size: 12px;
-            }
-            QSlider::groove:horizontal { height: 6px; background: #21262d; border-radius: 3px; }
-            QSlider::sub-page:horizontal { background: #58a6ff; border-radius: 3px; }
-            QSlider::handle:horizontal { background: #ffffff; width: 14px; margin-top: -4px; margin-bottom: -4px; border-radius: 7px; }
+                font-family: {font_mono}; font-size: 12px;
+            }}
+            QSlider::groove:horizontal {{ height: 6px; background: #21262d; border-radius: 3px; }}
+            QSlider::sub-page:horizontal {{ background: #58a6ff; border-radius: 3px; }}
+            QSlider::handle:horizontal {{ background: #ffffff; width: 14px; margin-top: -4px; margin-bottom: -4px; border-radius: 7px; }}
         """)
 
     def _init_ui(self):

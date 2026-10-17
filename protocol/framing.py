@@ -53,6 +53,10 @@ def unpack_header(channel: int, header_bytes: bytes) -> Tuple[int, int, int]:
         payload_len, seq_ts, service_type = struct.unpack(">III", header_bytes[:12])
         return payload_len, seq_ts, service_type
 
+import logging
+
+logger = logging.getLogger("CarLife_Framing")
+
 def recv_exact(sock: socket.socket, num_bytes: int) -> Optional[bytes]:
     """
     确保从 TCP Socket 中完整读取指定字节数（防止 TCP 分包粘包）。
@@ -61,13 +65,15 @@ def recv_exact(sock: socket.socket, num_bytes: int) -> Optional[bytes]:
     buf = bytearray()
     while len(buf) < num_bytes:
         try:
-            chunk = sock.recv(num_bytes - len(buf))
+            # 限制单次读取缓冲区，防止极大数值导致操作系统底层 recv 调用报错
+            chunk = sock.recv(min(num_bytes - len(buf), 65536))
             if not chunk:
                 return None
             buf.extend(chunk)
         except (socket.timeout, BlockingIOError):
             continue
-        except (ConnectionResetError, ConnectionAbortedError, OSError):
+        except (ConnectionResetError, ConnectionAbortedError, OSError) as e:
+            logger.debug(f"Socket 读取异常中断: {e}")
             return None
     return bytes(buf)
 
@@ -80,7 +86,16 @@ def read_message(sock: socket.socket, channel: int) -> Optional[Tuple[int, bytes
     hdr_data = recv_exact(sock, hdr_size)
     if hdr_data is None:
         return None
-    payload_len, _, service_type = unpack_header(channel, hdr_data)
+    try:
+        payload_len, _, service_type = unpack_header(channel, hdr_data)
+    except Exception as e:
+        logger.error(f"解析通道 {channel} 包头失败: {e}")
+        return None
+
+    if payload_len < 0 or payload_len > 16777216:
+        logger.error(f"通道 {channel} 报文载荷长度异常 ({payload_len} 字节)，流失步！")
+        return None
+
     if payload_len > 0:
         payload = recv_exact(sock, payload_len)
         if payload is None:
