@@ -114,7 +114,28 @@ class CarLifeConnector:
                     return False
 
         self.is_connected = True
+        self._start_aux_drainers()
         return True
+
+    def _start_aux_drainers(self):
+        """
+        依据官方车机 sources/d/b/a/a/p/o/e/c.java:70 与 SocketReader 逻辑
+        对非控制/非渲染辅助通道 (Channel 3: 媒体音频, Channel 4: TTS, Channel 5: VR) 启动后台静默消费守护线程
+        防止手机端因向 Socket 写入 PCM/状态包无响应或 TCP 接收缓冲区堆积导致连接异常
+        """
+        for ch_id in (constants.CHANNEL_AUDIO, constants.CHANNEL_TTS, constants.CHANNEL_VR):
+            sock = self.sockets.get(ch_id)
+            if not sock:
+                continue
+            def _drain_loop(s=sock, cid=ch_id):
+                while self.is_connected:
+                    try:
+                        chunk = s.recv(4096)
+                        if not chunk:
+                            break
+                    except Exception:
+                        break
+            threading.Thread(target=_drain_loop, daemon=True, name=f"CarLife_Drain_{ch_id}").start()
 
     # ================= 模式二：USB AOA 模式 =================
 
@@ -137,6 +158,7 @@ class CarLifeConnector:
 
         self.sockets = client_sockets
         self.is_connected = True
+        self._start_aux_drainers()
         logger.info("[*] USB AOA 虚拟通道多路复用已就绪")
         return True
 

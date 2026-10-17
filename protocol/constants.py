@@ -59,7 +59,7 @@ MSG_CMD_MD_BT_OOB_INFO = 65542                   # 0x00010006: 手机发送蓝�
 # 3. 视频参数协商与推流控制
 MSG_CMD_HU_VIDEO_ENCODER_INIT = 98311            # 0x00018007: 车端向手机通知期望的分辨率与帧率 (CarlifeVideoEncoderInfo)
 MSG_CMD_VIDEO_ENCODER_INIT = 65544               # 0x00010008: 手机提供编码参数 (CarlifeVideoEncoderInfo)
-MSG_CMD_VIDEO_ENCODER_INIT_DONE = 65544          # 0x00010008: 手机视频编码器准备好
+MSG_CMD_VIDEO_ENCODER_INIT_DONE = 65551          # 0x0001000F: 手机视频编码器准备好 (sources/d/b/a/a/p/k/b.java:45)
 MSG_CMD_VIDEO_ENCODER_START = 98313              # 0x00018009: 车端请求开始推流 (无负载)
 MSG_CMD_VIDEO_ENCODER_PAUSE = 98314              # 0x0001800A: 车端请求暂停推流 (无负载)
 MSG_CMD_VIDEO_ENCODER_RESET = 98315              # 0x0001800B: 车端请求重置推流 (无负载)
@@ -274,7 +274,8 @@ MSG_NAMES = {
 
     # 视频推流协商
     MSG_CMD_HU_VIDEO_ENCODER_INIT: "HU_VIDEO_ENCODER_INIT",
-    MSG_CMD_VIDEO_ENCODER_INIT: "VIDEO_ENCODER_INIT_DONE",
+    MSG_CMD_VIDEO_ENCODER_INIT: "VIDEO_ENCODER_INIT",
+    MSG_CMD_VIDEO_ENCODER_INIT_DONE: "VIDEO_ENCODER_INIT_DONE",
     MSG_CMD_VIDEO_ENCODER_START: "VIDEO_ENCODER_START",
     MSG_CMD_VIDEO_ENCODER_PAUSE: "VIDEO_ENCODER_PAUSE",
     MSG_CMD_VIDEO_ENCODER_RESET: "VIDEO_ENCODER_RESET",
@@ -568,4 +569,12 @@ def format_module_status_desc(module_id: int, status_id: int) -> str:
     mod_name = MODULE_NAMES.get(module_id, f"模块_{module_id}")
     status_desc = MODULE_STATUS_DESCS.get(module_id, {}).get(status_id, f"状态_{status_id}")
     return f"{mod_name}: {status_desc}"
+
+# ================= 连接类型状态常量 (ConnectState) =================
+# 依据百度官方规范表与 sources/d/b/b/l/j.java:60-72 / sources/d/b/a/a/p/h.java:276
+CONNECT_STATUS_ADB = 1          # 历史调试连接
+CONNECT_STATUS_AOA = 2          # Android Open Accessory (Android USB 有线模式)
+CONNECT_STATUS_NCM_ANDROID = 3  # Android USB NCM 虚拟网卡
+CONNECT_STATUS_NCM_IOS = 4      # iOS USB NCM 虚拟网卡 (EAP/IAP2)
+CONNECT_STATUS_WIFI = 5         # Wi-Fi 局域网无线连接 (UDP 7999 广播发现)
 

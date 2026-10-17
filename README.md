@@ -57,7 +57,7 @@ pip install -r requirements.txt
 ### 3. USB 驱动配置 (仅 USB AOA 模式)
 
 - **免开启 USB 调试与免 Root**：USB AOA 是 Google 官方为车载外设定义的通用协议，手机端无需开启“开发者模式”或“USB 调试”。
-- **Windows 用户注意**：如首次使用 USB 直连，手机切为 AOA 模式 (VID `0x18D1`) 后若 Windows 未自动加载 WinUSB 驱动，可通过工具 [Zadig](https://zadig.akeo.ie/) 为该设备安装 WinUSB / libusbK 驱动一次即可。
+- **Windows 用户注意**：如首次使用 USB 直连，手机切为 AOA 模式 (VID `0x18D1`) 后若 Windows 未自动加载 WinUSB 驱动，设备管理器中为其安装WinUSB驱动。
 
 ---
 
@@ -79,13 +79,7 @@ python tools/carlife_pc_tool/main.py
 
 在中控台界面顶部的【连接与传输设置】栏中进行模式选择：
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      连接与传输设置                              │
-│ 模式: [ USB AOA 模式 (标准有线互联) ▾ ] 手机 IP: [ USB AOA 即插即用 ]│
-│ [ 连接车机 ] [ 断开 ]                    状态: 未连接             │
-└─────────────────────────────────────────────────────────────────┘
-```
+![1792248438840](image/README/1792248438840.png)
 
 #### 模式一：USB AOA 模式 (车机标准有线互联，推荐)
 
@@ -93,28 +87,19 @@ python tools/carlife_pc_tool/main.py
 
 1. **无需开启 USB 调试，无需 ADB**；
 2. 用 USB 数据线将 Android 手机连接至电脑；
-3. 本工具中选择模式 **【USB AOA 模式 (标准有线互联)】**，点击 **【连接车机】**；
+3. 本工具中选择模式 **【USB AOA (有线)】**，点击 **【连接车机】**；
 4. 工具自动执行 AOA 51/52/53 指令握手协商，手机将自动收到系统通知并拉起百度 CarLife App；
 5. 底层经由 USB Bulk 端点与 8 字节 AOA 多路复用报文建立全部 7 通道高吞吐极速互联。
 
 #### 模式二：局域网监听模式 (车机原生无线发现)
 
-依据 [`transport/connector.py`](file:///d:/CodeWORK/Prj/carlife-vehicle/tools/carlife_pc_tool/transport/connector.py) 及车机端源码 [`sources/d/b/a/a/p/o/e/d.java:146`](file:///d:/CodeWORK/Prj/carlife-vehicle/sources/d/b/a/a/p/o/e/d.java#L146) 的监听机制：
+依据 [`transport/connector.py`](file:///d:/CodeWORK/Prj/carlife-vehicle/tools/carlife_pc_tool/transport/connector.py) 的监听机制：
 
 1. 确保电脑和手机连接在同一个局域网（同一台路由器或电脑开启的移动热点）；
-2. 本工具中选择模式 **【局域网监听模式 (自动发现手机接入)】**；
+2. 本工具中选择模式 **【局域网监听 (无线)】**；
 3. 点击 **【连接车机】**，工具将在后台监听 UDP 7999 端口，进入 `监听局域网广播...` 状态；
 4. 打开手机端 CarLife App，手机启动后会自动向局域网广播广播包 `"CarlifeHost"`；
 5. 工具捕获广播后自动解析手机 IP 并建立 7 个并发 TCP 通道连接。
-
-#### 模式三：局域网指定 IP 直连 (备用模式)
-
-依据车机端源码 [`sources/d/b/a/a/p/o/e/c.java:67-71`](file:///d:/CodeWORK/Prj/carlife-vehicle/sources/d/b/a/a/p/o/e/c.java#L67-L71) 的直连机制：
-
-1. 适用于 AP 隔离广播的特殊路由器网段；
-2. 确认手机当前的 Wi-Fi IP 地址（如 `192.168.1.105`）并在手机端打开 CarLife App；
-3. 本工具选择模式 **【局域网指定 IP 直连 (备用)】**，并在输入框填入手机 IP；
-4. 点击 **【连接车机】** 直接发起 7 通道回连。
 
 ---
 

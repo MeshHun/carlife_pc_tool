@@ -76,13 +76,26 @@ class TestCarLifeStateMachine(unittest.TestCase):
             auth = proto_codec.CarlifeAuthenResult(authenResult=True)
             conn.sendall(framing.pack_message(constants.CHANNEL_CMD, constants.MSG_CMD_MD_AUTHEN_RESULT, auth.SerializeToString()))
 
-            # Step 7: 接收车机确认 98380 (HU_AUTHEN_RESULT)
+            # Step 7: 接收车机确认 98380 (HU_AUTHEN_RESULT_98380 依据官方 sources/d/b/a/a/p/m/a/c.java:94)
             stype, payload = framing.read_message(conn, constants.CHANNEL_CMD)
-            self.assertEqual(stype, constants.MSG_CMD_HU_AUTHEN_RESULT)
+            self.assertEqual(stype, constants.MSG_CMD_HU_AUTHEN_RESULT_98380)
 
             # Step 8: 接收车机主动发送的 98311 (HU_VIDEO_ENCODER_INIT)
             stype, payload = framing.read_message(conn, constants.CHANNEL_CMD)
             self.assertEqual(stype, constants.MSG_CMD_HU_VIDEO_ENCODER_INIT)
+            hu_enc = proto_codec.CarlifeVideoEncoderInfo.FromString(payload)
+            self.assertEqual(hu_enc.frameRate, 30)  # 验证基准帧率为 30fps
+
+            # Step 8.5: 手机发送 65617 (MD_FEATURE_CONFIG_LIST)
+            fc_req = proto_codec.CarlifeFeatureConfigList()
+            conn.sendall(framing.pack_message(constants.CHANNEL_CMD, constants.MSG_CMD_MD_FEATURE_CONFIG_LIST, fc_req.SerializeToString()))
+
+            # Step 8.6: 接收车机回复的 98386 (HU_FEATURE_CONFIG_LIST) 并验证 CONNECT_TYPE=5 (Wi-Fi)
+            stype, payload = framing.read_message(conn, constants.CHANNEL_CMD)
+            self.assertEqual(stype, constants.MSG_CMD_HU_FEATURE_CONFIG_LIST)
+            fc_resp = proto_codec.CarlifeFeatureConfigList.FromString(payload)
+            resp_dict = {f.key: f.value for f in fc_resp.featureConfig}
+            self.assertEqual(resp_dict.get("CONNECT_TYPE"), constants.CONNECT_STATUS_WIFI)
 
             # Step 9: 手机发送 65544 (VIDEO_ENCODER_INIT)
             enc = proto_codec.CarlifeVideoEncoderInfo(width=1920, height=1080, frameRate=30)

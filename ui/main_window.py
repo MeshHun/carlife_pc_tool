@@ -171,7 +171,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 现代暗色高级车控主题
         self.setStyleSheet(f"""
             QMainWindow {{ background-color: #0d1117; }}
-            QWidget {{ color: #c9d1d9; font-family: {font_ui}; font-size: 13px; }}
+            QWidget {{ color: #c9d1d9; font-family: {font_ui}; font-size: 10pt; }}
             QGroupBox {{ border: 1px solid #30363d; border-radius: 6px; margin-top: 10px; font-weight: bold; }}
             QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #58a6ff; }}
             QPushButton {{
@@ -184,13 +184,38 @@ class MainWindow(QtWidgets.QMainWindow):
             QPushButton#btn_connect:hover {{ background-color: #2ea043; }}
             QPushButton#btn_disconnect {{ background-color: #da3633; color: #ffffff; border: none; }}
             QPushButton#btn_disconnect:hover {{ background-color: #f85149; }}
-            QLineEdit, QComboBox {{
+            QLineEdit {{
                 background-color: #161b22; border: 1px solid #30363d; border-radius: 6px;
-                padding: 5px; color: #c9d1d9;
+                padding: 5px; color: #c9d1d9; font-size: 10pt;min-width: 120px;
+            }}
+            /* 模式切换分段胶囊按钮样式 */
+            QPushButton#btn_seg_left {{
+                background-color: #21262d; border: 1px solid #363b42;
+                border-top-left-radius: 6px; border-bottom-left-radius: 6px;
+                border-top-right-radius: 0px; border-bottom-right-radius: 0px;
+                border-right: none; padding: 5px 12px; color: #8b949e;
+                font-size: 10pt; min-height: 22px; min-width: 100px;
+            }}
+            QPushButton#btn_seg_right {{
+                background-color: #21262d; border: 1px solid #363b42;
+                border-top-left-radius: 0px; border-bottom-left-radius: 0px;
+                border-top-right-radius: 6px; border-bottom-right-radius: 6px;
+                padding: 5px 12px; color: #8b949e;
+                font-size: 10pt; min-height: 22px; min-width: 110px;
+            }}
+            QPushButton#btn_seg_left:hover, QPushButton#btn_seg_right:hover {{
+                background-color: #30363d; color: #c9d1d9;
+            }}
+            QPushButton#btn_seg_left:checked, QPushButton#btn_seg_right:checked {{
+                background-color: #1f6feb; border-color: #388bfd; color: #ffffff;
+                font-weight: bold;
+            }}
+            QPushButton#btn_seg_left:disabled, QPushButton#btn_seg_right:disabled {{
+                background-color: #161b22; border-color: #21262d; color: #484f58;
             }}
             QTextEdit {{
                 background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
-                font-family: {font_mono}; font-size: 12px;
+                font-family: {font_mono}; font-size: 9.5pt;
             }}
             QSlider::groove:horizontal {{ height: 6px; background: #21262d; border-radius: 3px; }}
             QSlider::sub-page:horizontal {{ background: #58a6ff; border-radius: 3px; }}
@@ -211,13 +236,29 @@ class MainWindow(QtWidgets.QMainWindow):
         conn_group = QtWidgets.QGroupBox("连接与传输设置", self)
         conn_layout = QtWidgets.QHBoxLayout(conn_group)
 
-        self.combo_mode = QtWidgets.QComboBox(self)
-        self.combo_mode.addItems([
-            "USB AOA 模式 (标准有线互联)",
-            "局域网监听模式 (自动发现手机接入)",
-            "局域网指定 IP 直连 (备用)"
-        ])
-        self.combo_mode.currentIndexChanged.connect(self._on_mode_changed)
+        # 模式切换分段胶囊按钮
+        seg_container = QtWidgets.QFrame(self)
+        seg_layout = QtWidgets.QHBoxLayout(seg_container)
+        seg_layout.setContentsMargins(0, 0, 0, 0)
+        seg_layout.setSpacing(0)
+
+        self.btn_mode_aoa = QtWidgets.QPushButton("USB AOA (有线)", self)
+        self.btn_mode_aoa.setObjectName("btn_seg_left")
+        self.btn_mode_aoa.setCheckable(True)
+        self.btn_mode_aoa.setChecked(True)
+
+        self.btn_mode_lan = QtWidgets.QPushButton("局域网监听 (无线)", self)
+        self.btn_mode_lan.setObjectName("btn_seg_right")
+        self.btn_mode_lan.setCheckable(True)
+
+        self.btn_group_mode = QtWidgets.QButtonGroup(self)
+        self.btn_group_mode.setExclusive(True)
+        self.btn_group_mode.addButton(self.btn_mode_aoa, 0)
+        self.btn_group_mode.addButton(self.btn_mode_lan, 1)
+        self.btn_group_mode.idClicked.connect(self._on_mode_changed)
+
+        seg_layout.addWidget(self.btn_mode_aoa)
+        seg_layout.addWidget(self.btn_mode_lan)
 
         self.edit_ip = QtWidgets.QLineEdit("USB AOA 即插即用", self)
         self.edit_ip.setPlaceholderText("无需 IP (USB 原生传输)")
@@ -236,7 +277,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lbl_status_badge.setStyleSheet("color: #8b949e; font-weight: bold;")
 
         conn_layout.addWidget(QtWidgets.QLabel("模式:"))
-        conn_layout.addWidget(self.combo_mode)
+        conn_layout.addWidget(seg_container)
         conn_layout.addWidget(QtWidgets.QLabel("手机 IP:"))
         conn_layout.addWidget(self.edit_ip)
         conn_layout.addWidget(self.btn_connect)
@@ -377,14 +418,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.edit_ip.setText("USB AOA 即插即用")
             self.edit_ip.setPlaceholderText("无需 IP (USB 原生传输)")
             self.edit_ip.setEnabled(False)
-        elif index == 1:  # 局域网监听模式 (车机原生行为)
+        else:  # 局域网监听模式 (车机原生行为)
             self.edit_ip.clear()
             self.edit_ip.setPlaceholderText("等待手机端 UDP 7999 广播自动捕获...")
             self.edit_ip.setEnabled(False)
-        else:  # 局域网指定 IP 直连 (备用)
-            self.edit_ip.setText("192.168.")
-            self.edit_ip.setPlaceholderText("手动输入手机 IP 地址")
-            self.edit_ip.setEnabled(True)
  
     def _append_log(self, text: str, color: str):
         # 过滤高频日志：仅过滤视频心跳保活与媒体进度条高频推送
@@ -414,11 +451,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lbl_status_badge.setStyleSheet("color: #3fb950; font-weight: bold;")
             self.btn_connect.setEnabled(False)
             self.btn_disconnect.setEnabled(True)
+            self.btn_mode_aoa.setEnabled(False)
+            self.btn_mode_lan.setEnabled(False)
         elif state_str == HandshakeState.DISCONNECTED:
             self.is_connected = False
             self.lbl_status_badge.setStyleSheet("color: #f85149; font-weight: bold;")
             self.btn_connect.setEnabled(True)
             self.btn_disconnect.setEnabled(False)
+            self.btn_mode_aoa.setEnabled(True)
+            self.btn_mode_lan.setEnabled(True)
 
             if self.video_receiver:
                 try:
@@ -461,8 +502,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def start_connection(self):
         self.btn_connect.setEnabled(False)
         self.btn_disconnect.setEnabled(True)
+        self.btn_mode_aoa.setEnabled(False)
+        self.btn_mode_lan.setEnabled(False)
 
-        mode = self.combo_mode.currentIndex()
+        mode = self.btn_group_mode.checkedId()
 
         def _setup_session():
             """通道就绪后，启动触控发送、车况注入及握手协议状态机"""
@@ -490,12 +533,14 @@ class MainWindow(QtWidgets.QMainWindow):
                     color = "#79c0ff"  # 手机端收到
                 self.sig_log.emit(f"{txt} (ID: {sid})", color)
 
+            connect_type = constants.CONNECT_STATUS_AOA if mode == 0 else constants.CONNECT_STATUS_WIFI
             self.state_machine = CarLifeStateMachine(
                 cmd_socket=cmd_sock,
                 on_state_change=lambda st: self.sig_state.emit(st),
                 on_log=lambda txt, sid, pld: _format_ui_log(txt, sid),
                 on_video_ready=lambda w, h, fps: self.sig_video_ready.emit(w, h, fps),
-                on_navi_hud_info=lambda hud: self.sig_hud_info.emit(hud)
+                on_navi_hud_info=lambda hud: self.sig_hud_info.emit(hud),
+                connect_type=connect_type
             )
             self.state_machine.start()
 
@@ -515,7 +560,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
                 _setup_session()
 
-            elif mode == 1:  # 局域网监听模式 (依据 sources/d/b/a/a/p/o/e/d.java:146)
+            else:  # 局域网监听模式 (自动发现手机接入)
                 self.sig_log.emit("[*] 局域网监听模式：正在后台监听 UDP 7999 端口，请在手机上打开 CarLife App...", "#58a6ff")
                 self.sig_state.emit("监听局域网广播...")
 
@@ -533,19 +578,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     _setup_session()
 
                 self.connector.start_lan_discovery(_on_ip_found)
-
-            else:  # 局域网指定 IP 直连 (备用)
-                target_ip = self.edit_ip.text().strip()
-                if not target_ip or target_ip == "192.168.":
-                    self.sig_log.emit("[-] 请输入有效的手机 IP 地址", "#f85149")
-                    self.sig_state.emit(HandshakeState.DISCONNECTED)
-                    return
-                self.sig_log.emit(f"[*] 正在向手机 {target_ip} 建立 7 个 TCP 通道...", "#58a6ff")
-                if not self.connector.connect_all_channels(target_ip):
-                    self.sig_log.emit("[-] 无法连接手机端 CarLife，请确认手机端已启动 CarLife App", "#f85149")
-                    self.sig_state.emit(HandshakeState.DISCONNECTED)
-                    return
-                _setup_session()
 
         import threading
         threading.Thread(target=_connect_task, daemon=True, name="CarLife_Connect_Task").start()

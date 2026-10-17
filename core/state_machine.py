@@ -31,13 +31,15 @@ class CarLifeStateMachine:
                  on_log: Optional[Callable[[str, int, bytes], None]] = None,
                  on_video_ready: Optional[Callable[[int, int, int], None]] = None,
                  on_navi_hud_info: Optional[Callable[[object], None]] = None,
-                 on_module_status: Optional[Callable[[list], None]] = None):
+                 on_module_status: Optional[Callable[[list], None]] = None,
+                 connect_type: int = constants.CONNECT_STATUS_WIFI):
         self.cmd_socket = cmd_socket
         self.on_state_change = on_state_change
         self.on_log = on_log
         self.on_video_ready = on_video_ready
         self.on_navi_hud_info = on_navi_hud_info
         self.on_module_status = on_module_status
+        self.connect_type = connect_type
 
         self.state = HandshakeState.DISCONNECTED
         self.is_running = False
@@ -46,7 +48,7 @@ class CarLifeStateMachine:
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._handshake_thread: Optional[threading.Thread] = None
 
-        # 手机端与视频端信息
+        # 手机端与视频端信息 (默认基准帧率 30fps 兼容 iOS 与 Android 硬件编码器)
         self.phone_device_info = None
         self.video_width = 1920
         self.video_height = 1080
@@ -262,8 +264,8 @@ class CarLifeStateMachine:
         elif service_type == constants.MSG_CMD_MD_AUTHEN_RESULT:
             auth = proto_codec.CarlifeAuthenResult.FromString(payload)
             logger.info(f"[鉴权] 手机端鉴权结果: {auth.authenResult}")
-            # 依据 sources/d/b/a/a/p/m/a/c.java:94 车端先回复 98380 确认
-            self.send_cmd(constants.MSG_CMD_HU_AUTHEN_RESULT)
+            # 依据 sources/d/b/a/a/p/m/a/c.java:94 车端回复 98380 确认 (纯ACK信号)
+            self.send_cmd(constants.MSG_CMD_HU_AUTHEN_RESULT_98380)
             self.set_state(HandshakeState.CONFIG_EXCHANGING)
 
             # 依据 sources/d/b/a/a/p/m/a/c.java:100 与 sources/d/b/a/a/p/k/b.java:170-176:
@@ -272,24 +274,38 @@ class CarLifeStateMachine:
 
         # 4. 收到特征配置列表 (65617)
         elif service_type == constants.MSG_CMD_MD_FEATURE_CONFIG_LIST:
+            # 尝试解析并记录手机端请求的配置
+            try:
+                req_fc = proto_codec.CarlifeFeatureConfigList.FromString(payload)
+                md_features = {item.key: item.value for item in req_fc.featureConfig}
+                logger.info(f"[特征配置] 手机端上报特征请求: {md_features}")
+            except Exception as e:
+                logger.debug(f"[特征配置] 解析手机端 FeatureConfigList 忽略: {e}")
+
             # 依据 sources/d/b/a/a/p/m/a/f.java:69-80 回复车机支持的特征
             fc_list = proto_codec.CarlifeFeatureConfigList()
-            fc_list.cnt = 3
             fc_list.huBtAudioSupport = False
             fc_list.huBtName = "CarLife_PC"
             fc_list.huBtMAC = "00:11:22:33:44:55"
 
-            # 注入原生默认 Feature 配置 (VehicleApplication.java:120)
-            f1 = fc_list.featureConfig.add()
-            f1.key = "USB_MTU"
-            f1.value = 16384
+            # 注入车机 Feature 配置 (依据 sources/com/baidu/carlifevehiclef/VehicleApplication.java:120)
+            # 严禁在 Wi-Fi 模式下向 iOS 设备发送 CONNECT_TYPE=2 (AOA)，否则 iOS 会因缺少 USB AOA 驱动闪退！
+            if self.connect_type == constants.CONNECT_STATUS_AOA:
+                f1 = fc_list.featureConfig.add()
+                f1.key = "USB_MTU"
+                f1.value = 16384
+
             f2 = fc_list.featureConfig.add()
             f2.key = "I_FRAME_INTERVAL"
             f2.value = 300
+
             f3 = fc_list.featureConfig.add()
             f3.key = "CONNECT_TYPE"
-            f3.value = 2
+            f3.value = self.connect_type
 
+            fc_list.cnt = len(fc_list.featureConfig)
+
+            logger.info(f"[特征配置] 回复车端特征: CONNECT_TYPE={self.connect_type} ({'Wi-Fi/局域网' if self.connect_type == constants.CONNECT_STATUS_WIFI else 'USB AOA'})")
             self.send_cmd(constants.MSG_CMD_HU_FEATURE_CONFIG_LIST, fc_list.SerializeToString())
             self.set_state(HandshakeState.VIDEO_PREPARING)
 
