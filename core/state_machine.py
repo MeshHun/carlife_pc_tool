@@ -44,6 +44,7 @@ class CarLifeStateMachine:
         self.last_heartbeat_time = 0.0
         self._reader_thread: Optional[threading.Thread] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
+        self._handshake_thread: Optional[threading.Thread] = None
 
         # 手机端与视频端信息
         self.phone_device_info = None
@@ -63,16 +64,43 @@ class CarLifeStateMachine:
         self._reader_thread = threading.Thread(target=self._cmd_reader_loop, daemon=True, name="CarLife_CmdReader")
         self._reader_thread.start()
 
-        # 依据 sources/d/b/a/a/p/m/a/c.java:126 onConnectionAttached
-        # 车机主动向手机发送 MSG_CMD_HU_PROTOCOL_VERSION (98305)
-        self.send_protocol_version()
+        # 启动握手信令定时重试线程 (每 1.5 秒发送一次 98305，直到手机响应或连接断开)
+        self._handshake_thread = threading.Thread(target=self._handshake_loop, daemon=True, name="CarLife_HandshakeWorker")
+        self._handshake_thread.start()
+
+    def _handshake_loop(self):
+        """握手重试循环：等待手机响应版本协商，期间每隔 1.5 秒重发一次 98305"""
+        retry = 0
+        while self.is_running and self.state in (HandshakeState.DISCONNECTED, HandshakeState.VERSION_NEGOTIATING):
+            if not self.send_protocol_version():
+                logger.warning("[!] 握手版本协商信令发送失败，停止握手重试循环")
+                break
+            retry += 1
+            if retry == 2 and self.on_log:
+                self.on_log("[*] 等待手机响应：如手机弹出【允许访问该 USB 配件】对话框，请点击【确定】并保持 CarLife 在前台", 0, b"")
+            for _ in range(15):
+                if not self.is_running or self.state not in (HandshakeState.DISCONNECTED, HandshakeState.VERSION_NEGOTIATING):
+                    return
+                time.sleep(0.1)
 
     def stop(self):
+        if not self.is_running and self.state == HandshakeState.DISCONNECTED:
+            return
         self.is_running = False
         self.set_state(HandshakeState.DISCONNECTED)
+        try:
+            self.cmd_socket.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            self.cmd_socket.close()
+        except Exception:
+            pass
 
-    def send_cmd(self, service_type: int, payload: bytes = b""):
-        """向 Channel 1 发送控制消息"""
+    def send_cmd(self, service_type: int, payload: bytes = b"") -> bool:
+        """向 Channel 1 发送控制消息，返回是否发送成功"""
+        if not self.is_running:
+            return False
         try:
             packet = framing.pack_message(constants.CHANNEL_CMD, service_type, payload)
             self.cmd_socket.sendall(packet)
@@ -80,15 +108,17 @@ class CarLifeStateMachine:
             logger.debug(f"[TX CMD] {msg_name} (ID: {service_type}, len: {len(payload)})")
             if self.on_log:
                 self.on_log(f"-> 发送: {msg_name}", service_type, payload)
+            return True
         except Exception as e:
-            logger.error(f"发送信令失败 (type {service_type}): {e}")
+            logger.error(f"发送信令失败 (type {service_type}): {e}，判定连接已断开！")
             self.stop()
+            return False
 
-    def send_protocol_version(self):
+    def send_protocol_version(self) -> bool:
         """发送协议版本协商 (98305)"""
         self.set_state(HandshakeState.VERSION_NEGOTIATING)
         ver = proto_codec.CarlifeProtocolVersion(majorVersion=4, minorVersion=0)
-        self.send_cmd(constants.MSG_CMD_HU_PROTOCOL_VERSION, ver.SerializeToString())
+        return self.send_cmd(constants.MSG_CMD_HU_PROTOCOL_VERSION, ver.SerializeToString())
 
     def send_statistics_info(self):
         """
@@ -164,11 +194,17 @@ class CarLifeStateMachine:
         def _hb_loop():
             logger.info("[*] 心跳保活线程启动 (周期 1000ms)...")
             while self.is_running:
-                time.sleep(1.0)
+                for _ in range(10):
+                    if not self.is_running:
+                        break
+                    time.sleep(0.1)
                 if not self.is_running:
                     break
-                # 发送 MSG_CMD_HU_HEARTBEAT (131074)
-                self.send_cmd(constants.MSG_CMD_HU_HEARTBEAT)
+                # 发送心跳包：失败一次立即认定连接断开，彻底退出，绝不无脑补发！
+                if not self.send_cmd(constants.MSG_CMD_HU_HEARTBEAT):
+                    logger.warning("[!] 心跳发送失败一次，直接判定为连接已断开，立即终止心跳保活线程！")
+                    self.stop()
+                    break
 
         self._heartbeat_thread = threading.Thread(target=_hb_loop, daemon=True, name="CarLife_Heartbeat")
         self._heartbeat_thread.start()

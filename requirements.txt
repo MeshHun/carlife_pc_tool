@@ -4,7 +4,9 @@
 PyQt6>=6.7.0
 av>=12.0.0
 protobuf>=5.0.0
+pyusb>=1.2.1
+libusb>=1.0.26
 
 # NOTE:
-# USB mode also requires Android ADB to be installed and available in PATH.
-# For Windows, install Android SDK Platform Tools and ensure adb.exe is callable.
+# - USB AOA 模式：纯原生 USB 协议互联，无需手机开启 USB 调试或安装 ADB。
+# - 局域网监听模式：自动在局域网内监听 UDP 7999 端口捕获手机端广播并接入。

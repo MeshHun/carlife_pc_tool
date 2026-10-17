@@ -139,7 +139,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(1200, 780)
         self._setup_theme()
 
-        self.connector = CarLifeConnector()
+        self.connector = CarLifeConnector(on_disconnect=self._on_fatal_disconnect)
         self.state_machine: Optional[CarLifeStateMachine] = None
         self.video_receiver: Optional[VideoReceiver] = None
         self.touch_sender: Optional[TouchSender] = None
@@ -202,14 +202,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.combo_mode = QtWidgets.QComboBox(self)
         self.combo_mode.addItems([
-            "USB (ADB 自动端口穿透)",
-            "Wi-Fi (UDP 7999 广播自动捕获)",
-            "Wi-Fi (手动指定手机 IP)"
+            "USB AOA 模式 (标准有线互联)",
+            "局域网监听模式 (自动发现手机接入)",
+            "局域网指定 IP 直连 (备用)"
         ])
         self.combo_mode.currentIndexChanged.connect(self._on_mode_changed)
 
-        self.edit_ip = QtWidgets.QLineEdit("127.0.0.1", self)
-        self.edit_ip.setPlaceholderText("等待广播捕获或手动输入 IP")
+        self.edit_ip = QtWidgets.QLineEdit("USB AOA 即插即用", self)
+        self.edit_ip.setPlaceholderText("无需 IP (USB 原生传输)")
         self.edit_ip.setEnabled(False)
 
         self.btn_connect = QtWidgets.QPushButton("连接车机", self)
@@ -362,15 +362,15 @@ class MainWindow(QtWidgets.QMainWindow):
         super().changeEvent(event)
 
     def _on_mode_changed(self, index: int):
-        if index == 0:  # USB ADB
-            self.edit_ip.setText("127.0.0.1")
-            self.edit_ip.setPlaceholderText("ADB 本地回环 (127.0.0.1)")
+        if index == 0:  # USB AOA 模式
+            self.edit_ip.setText("USB AOA 即插即用")
+            self.edit_ip.setPlaceholderText("无需 IP (USB 原生传输)")
             self.edit_ip.setEnabled(False)
-        elif index == 1:  # Wi-Fi 自动广播捕获 (原生车机行为)
+        elif index == 1:  # 局域网监听模式 (车机原生行为)
             self.edit_ip.clear()
             self.edit_ip.setPlaceholderText("等待手机端 UDP 7999 广播自动捕获...")
             self.edit_ip.setEnabled(False)
-        else:  # Wi-Fi 手动指定手机 IP
+        else:  # 局域网指定 IP 直连 (备用)
             self.edit_ip.setText("192.168.")
             self.edit_ip.setPlaceholderText("手动输入手机 IP 地址")
             self.edit_ip.setEnabled(True)
@@ -392,6 +392,10 @@ class MainWindow(QtWidgets.QMainWindow):
         html_str = f"<div style='color: {color};'>[{timestamp}] {escaped_text}</div>"
         self.text_log.append(html_str)
 
+    def _on_fatal_disconnect(self, reason: str):
+        self.sig_log.emit(f"[-] 底层传输链路中断 ({reason})，已彻底释放所有通道并重置连接", "#f85149")
+        self.sig_state.emit(HandshakeState.DISCONNECTED)
+
     def _update_state(self, state_str: str):
         self.lbl_status_badge.setText(f"状态: {state_str}")
         if state_str == HandshakeState.CONNECTED:
@@ -404,6 +408,26 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lbl_status_badge.setStyleSheet("color: #f85149; font-weight: bold;")
             self.btn_connect.setEnabled(True)
             self.btn_disconnect.setEnabled(False)
+
+            if self.video_receiver:
+                try:
+                    self.video_receiver.stop()
+                except Exception:
+                    pass
+                self.video_receiver = None
+
+            if self.state_machine:
+                try:
+                    self.state_machine.stop()
+                except Exception:
+                    pass
+                self.state_machine = None
+
+            try:
+                self.connector.disconnect_all()
+            except Exception:
+                pass
+
             # 无论主动还是被动断开，彻底清空缓存与画布残留
             with self._frame_lock:
                 self._latest_frame = None
@@ -429,14 +453,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         mode = self.combo_mode.currentIndex()
 
-        def _do_connect_channels(host_ip: str):
-            self.sig_log.emit(f"[*] 正在向手机 {host_ip} 发起 7 通道连接...", "#58a6ff")
-            if not self.connector.connect_all_channels(host_ip):
-                self.sig_log.emit("[-] 无法连接手机端 CarLife，请确认手机端已启动 CarLife App", "#f85149")
-                self.sig_state.emit(HandshakeState.DISCONNECTED)
-                return
-
-            self.sig_log.emit("[+] 通道连接成功，启动协议握手状态机...", "#3fb950")
+        def _setup_session():
+            """通道就绪后，启动触控发送、车况注入及握手协议状态机"""
+            self.sig_log.emit("[+] 通道已就绪，启动协议握手状态机...", "#3fb950")
 
             # 1. 初始化触控与车况发送器
             cmd_sock = self.connector.get_socket(constants.CHANNEL_CMD)
@@ -471,37 +490,54 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def _connect_task():
             import threading
-            if mode == 0:  # USB ADB 模式
-                self.sig_log.emit("正在检测 ADB 设备并配置端口映射...", "#58a6ff")
-                if not CarLifeConnector.setup_adb_forward():
-                    self.sig_log.emit("[-] ADB 映射失败，请检查手机是否已连接且开启 USB 调试", "#f85149")
+            if mode == 0:  # USB AOA 模式 (标准有线互联)
+                self.sig_log.emit("[*] 正在启动 USB AOA 模式，正在与 Android 设备协商握手...", "#58a6ff")
+                self.sig_state.emit("AOA 协商中...")
+
+                def _aoa_log_bridge(txt: str, clr: str):
+                    self.sig_log.emit(txt, clr)
+
+                if not self.connector.connect_aoa(log_callback=_aoa_log_bridge):
+                    self.sig_log.emit("[-] USB AOA 连接建立失败，请确认数据线连接正常且驱动已安装", "#f85149")
                     self.sig_state.emit(HandshakeState.DISCONNECTED)
                     return
-                _do_connect_channels("127.0.0.1")
 
-            elif mode == 1:  # Wi-Fi 自动广播捕获模式 (依据 sources/d/b/a/a/p/o/e/d.java:146)
-                self.sig_log.emit("[*] 原生车机广播模式：正在后台监听 UDP 7999 端口，请在手机上打开 CarLife App...", "#58a6ff")
-                self.sig_state.emit("等待手机广播...")
+                _setup_session()
+
+            elif mode == 1:  # 局域网监听模式 (依据 sources/d/b/a/a/p/o/e/d.java:146)
+                self.sig_log.emit("[*] 局域网监听模式：正在后台监听 UDP 7999 端口，请在手机上打开 CarLife App...", "#58a6ff")
+                self.sig_state.emit("监听局域网广播...")
 
                 def _on_ip_found(phone_ip: str):
                     self.sig_log.emit(f"[+] 捕获到手机广播！手机 IP: {phone_ip}", "#3fb950")
                     self.sig_state.emit(f"发现手机 {phone_ip}")
                     # 使用 QTimer.singleShot 保证在主线程更新 UI 文本
                     QtCore.QTimer.singleShot(0, lambda: self.edit_ip.setText(phone_ip))
-                    _do_connect_channels(phone_ip)
 
-                self.connector.start_wifi_discovery(_on_ip_found)
+                    self.sig_log.emit(f"[*] 正在向手机 {phone_ip} 建立 7 个 TCP 通道...", "#58a6ff")
+                    if not self.connector.connect_all_channels(phone_ip):
+                        self.sig_log.emit("[-] 无法连接手机端 CarLife，请确认手机端已启动 CarLife App", "#f85149")
+                        self.sig_state.emit(HandshakeState.DISCONNECTED)
+                        return
+                    _setup_session()
 
-            else:  # Wi-Fi 手动输入 IP
+                self.connector.start_lan_discovery(_on_ip_found)
+
+            else:  # 局域网指定 IP 直连 (备用)
                 target_ip = self.edit_ip.text().strip()
                 if not target_ip or target_ip == "192.168.":
                     self.sig_log.emit("[-] 请输入有效的手机 IP 地址", "#f85149")
                     self.sig_state.emit(HandshakeState.DISCONNECTED)
                     return
-                _do_connect_channels(target_ip)
+                self.sig_log.emit(f"[*] 正在向手机 {target_ip} 建立 7 个 TCP 通道...", "#58a6ff")
+                if not self.connector.connect_all_channels(target_ip):
+                    self.sig_log.emit("[-] 无法连接手机端 CarLife，请确认手机端已启动 CarLife App", "#f85149")
+                    self.sig_state.emit(HandshakeState.DISCONNECTED)
+                    return
+                _setup_session()
 
         import threading
-        threading.Thread(target=_connect_task, daemon=True).start()
+        threading.Thread(target=_connect_task, daemon=True, name="CarLife_Connect_Task").start()
 
     def _on_video_ready(self, width: int, height: int, fps: int):
         self.sig_log.emit(f"[+] 启动视频解码接收 (分辨率: {width}x{height} @ {fps}fps)", "#3fb950")
@@ -590,11 +626,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def stop_connection(self):
         self.is_connected = False
-        self.connector.stop_wifi_discovery()
+        self.connector.stop_lan_discovery()
         if self.video_receiver:
             self.video_receiver.stop()
             self.video_receiver = None
         if self.state_machine:
+            try:
+                # 依据协议暂停手机端视频录制推流 (98314) 并通知返回桌面 (65569)
+                self.state_machine.send_cmd(constants.MSG_CMD_VIDEO_ENCODER_PAUSE)
+                self.state_machine.send_cmd(constants.MSG_CMD_GO_TO_DESKTOP)
+            except Exception:
+                pass
             self.state_machine.stop()
             self.state_machine = None
         self.connector.disconnect_all()
