@@ -38,6 +38,7 @@ class VideoDisplayWidget(QtWidgets.QWidget):
         self.current_image: Optional[QImage] = None
         self.is_connected = False
         self.touch_sender: Optional[TouchSender] = None
+        self._is_touching = False
 
     def set_touch_sender(self, sender: TouchSender):
         self.touch_sender = sender
@@ -53,7 +54,49 @@ class VideoDisplayWidget(QtWidgets.QWidget):
     def show_disconnected(self):
         self.is_connected = False
         self.current_image = None
+        self._is_touching = False
         self.repaint()
+
+    def _calc_render_metrics(self):
+        """计算视频渲染区域与偏移量"""
+        w_widget = self.width()
+        h_widget = self.height()
+        target_w = 1280
+        target_h = 720
+        if self.current_image and not self.current_image.isNull():
+            target_w = self.current_image.width()
+            target_h = self.current_image.height()
+        elif self.touch_sender:
+            target_w = self.touch_sender.target_width
+            target_h = self.touch_sender.target_height
+
+        if target_w <= 0 or target_h <= 0:
+            target_w, target_h = 1280, 720
+
+        scale = min(w_widget / target_w, h_widget / target_h)
+        disp_w = target_w * scale
+        disp_h = target_h * scale
+        offset_x = (w_widget - disp_w) / 2.0
+        offset_y = (h_widget - disp_h) / 2.0
+        return offset_x, offset_y, disp_w, disp_h, target_w, target_h
+
+    def _calc_touch_pos(self, event: QtGui.QMouseEvent):
+        offset_x, offset_y, disp_w, disp_h, target_w, target_h = self._calc_render_metrics()
+        pos = event.position()
+        rel_x = pos.x() - offset_x
+        rel_y = pos.y() - offset_y
+
+        is_inside = (0.0 <= rel_x <= disp_w) and (0.0 <= rel_y <= disp_h)
+        clamped_x = max(0.0, min(rel_x, disp_w))
+        clamped_y = max(0.0, min(rel_y, disp_h))
+
+        car_x = int((clamped_x / disp_w) * target_w) if disp_w > 0 else 0
+        car_y = int((clamped_y / disp_h) * target_h) if disp_h > 0 else 0
+
+        car_x = max(0, min(car_x, target_w))
+        car_y = max(0, min(car_y, target_h))
+
+        return is_inside, car_x, car_y
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -70,61 +113,42 @@ class VideoDisplayWidget(QtWidgets.QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, text)
             return
 
-        img_w = self.current_image.width()
-        img_h = self.current_image.height()
-        if img_w <= 0 or img_h <= 0:
-            return
-
-        # 计算在保持等比缩放时的有效渲染区域
-        w_widget = self.width()
-        h_widget = self.height()
-        scale = min(w_widget / img_w, h_widget / img_h)
-        disp_w = int(img_w * scale)
-        disp_h = int(img_h * scale)
-        offset_x = int((w_widget - disp_w) / 2.0)
-        offset_y = int((h_widget - disp_h) / 2.0)
-
-        target_rect = QtCore.QRect(offset_x, offset_y, disp_w, disp_h)
+        offset_x, offset_y, disp_w, disp_h, _, _ = self._calc_render_metrics()
+        target_rect = QtCore.QRect(int(offset_x), int(offset_y), int(disp_w), int(disp_h))
         # 高性能直接绘制：硬件/Qt 图形管线加速缩放，免除 CPU 逐像素重采样开销
         painter.drawImage(target_rect, self.current_image)
 
-    def _handle_mouse(self, event: QtGui.QMouseEvent, action: int):
-        if not self.is_connected or not self.touch_sender:
-            return
-
-        # 计算在保持等比缩放时的有效渲染区域
-        w_widget = self.width()
-        h_widget = self.height()
-        target_w = self.touch_sender.target_width
-        target_h = self.touch_sender.target_height
-
-        scale = min(w_widget / target_w, h_widget / target_h)
-        disp_w = target_w * scale
-        disp_h = target_h * scale
-        offset_x = (w_widget - disp_w) / 2.0
-        offset_y = (h_widget - disp_h) / 2.0
-
-        pos = event.position()
-        rel_x = pos.x() - offset_x
-        rel_y = pos.y() - offset_y
-
-        if 0 <= rel_x <= disp_w and 0 <= rel_y <= disp_h:
-            car_x = int((rel_x / disp_w) * target_w)
-            car_y = int((rel_y / disp_h) * target_h)
-            self.touch_sender.send_touch(action, car_x, car_y)
-
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._handle_mouse(event, constants.ACTION_DOWN)
+            if not self.is_connected or not self.touch_sender:
+                return
+            is_inside, car_x, car_y = self._calc_touch_pos(event)
+            if is_inside:
+                self._is_touching = True
+                self.touch_sender.send_touch(constants.ACTION_DOWN, car_x, car_y)
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent):
-        if event.buttons() & Qt.MouseButton.LeftButton:
-            self._handle_mouse(event, constants.ACTION_MOVE)
+        if not self._is_touching:
+            return
+        if not self.is_connected or not self.touch_sender:
+            self._is_touching = False
+            return
+
+        is_inside, car_x, car_y = self._calc_touch_pos(event)
+        if is_inside:
+            self.touch_sender.send_touch(constants.ACTION_MOVE, car_x, car_y)
+        else:
+            # 拖动移出渲染区域：在边界处释放点击，并终止触控状态
+            self.touch_sender.send_touch(constants.ACTION_UP, car_x, car_y)
+            self._is_touching = False
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._handle_mouse(event, constants.ACTION_UP)
-
+            if self._is_touching:
+                if self.is_connected and self.touch_sender:
+                    _, car_x, car_y = self._calc_touch_pos(event)
+                    self.touch_sender.send_touch(constants.ACTION_UP, car_x, car_y)
+                self._is_touching = False
 
 class MainWindow(QtWidgets.QMainWindow):
     sig_log = pyqtSignal(str, str)             # text, color
@@ -143,6 +167,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.state_machine: Optional[CarLifeStateMachine] = None
         self.video_receiver: Optional[VideoReceiver] = None
         self.touch_sender: Optional[TouchSender] = None
+        self._is_touching = False
         self.car_data_sender: Optional[CarDataSender] = None
         self.floating_hud = HudFloatingWindow(self)
         self.is_connected = False
